@@ -193,10 +193,15 @@ const rechner = (function () {
     if (formular.elements.baujahr) formular.elements.baujahr.value = e.baujahr;
     formular.elements.umfang.value =
       e.umfang === 'weg_sev' ? 'WEG plus Sondereigentum' : 'Nur WEG-Verwaltung';
+    formular.elements.umfang.dispatchEvent(new Event('change'));
 
+    // rechnen() liefert unter „zusatz“ den Betrag, nicht die Auswahl —
+    // deshalb die angehakten Besonderheiten direkt lesen
+    const gewaehlt = [...document.querySelectorAll('#rechner input[name="zusatz"]:checked')]
+      .map(feld => feld.value);
     const merkmale = [];
-    if (e.zusatz.includes('aufzug'))  merkmale.push('Aufzug vorhanden');
-    if (e.zusatz.includes('gewerbe')) merkmale.push('Gewerbeeinheiten im Objekt');
+    if (gewaehlt.includes('aufzug'))  merkmale.push('Aufzug vorhanden');
+    if (gewaehlt.includes('gewerbe')) merkmale.push('Gewerbeeinheiten im Objekt');
     if (merkmale.length) {
       const feld = formular.elements.nachricht;
       const zusatzText = 'Besonderheiten: ' + merkmale.join(', ') + '.';
@@ -217,13 +222,44 @@ const rechner = (function () {
   if (!formular) return;
   const meldung = document.getElementById('anfrage-meldung');
 
+  // Nur bei der WEG-Verwaltung ist die Zahl der Einheiten Pflicht (ab drei).
+  // Bei Verkauf, Vermietung oder Bauvorhaben ist sie freiwillig.
+  const WEG_ANLIEGEN = ['Nur WEG-Verwaltung', 'WEG plus Sondereigentum'];
+  const istWeg = () => WEG_ANLIEGEN.includes(formular.elements.umfang.value);
+
   const regeln = {
     name:     w => w.trim().length >= 2      || 'Bitte tragen Sie Ihren Namen ein.',
     email:    w => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(w.trim()) || 'Diese E-Mail-Adresse sieht nicht vollständig aus.',
-    ort:      w => w.trim().length >= 2      || 'Bitte nennen Sie den Ort der Anlage.',
-    einheiten:w => Number(w) >= 3 && Number(w) <= 500
-      || 'Ab drei Einheiten aufwärts — darunter übernehme ich keine Verwaltung.'
+    ort:      w => w.trim().length >= 2      || 'Bitte nennen Sie den Ort der Immobilie.',
+    einheiten:w => {
+      if (istWeg()) {
+        return (Number(w) >= 3 && Number(w) <= 500)
+          || 'Für die WEG-Verwaltung ab drei Einheiten — darunter übernehme ich keine Verwaltung.';
+      }
+      if (w.trim() === '') return true;
+      return (Number(w) >= 1 && Number(w) <= 500) || 'Bitte eine Zahl zwischen 1 und 500 eintragen.';
+    }
   };
+
+  // Pflicht-Sternchen und Prüfung der Einheiten an das Anliegen anpassen
+  const einheitenFeld = formular.elements.einheiten;
+  const pflichtStern = document.getElementById('einheiten-pflicht');
+  function anliegenAnwenden() {
+    const weg = istWeg();
+    einheitenFeld.required = weg;
+    if (pflichtStern) pflichtStern.hidden = !weg;
+    if (einheitenFeld.closest('.eingabe').classList.contains('eingabe--fehler')) feldPruefen(einheitenFeld);
+  }
+  formular.elements.umfang.addEventListener('change', anliegenAnwenden);
+  formular.addEventListener('reset', () => setTimeout(anliegenAnwenden, 0));
+
+  // Links in den Leistungskarten wählen das passende Anliegen vor
+  document.querySelectorAll('a[data-anliegen]').forEach(link => {
+    link.addEventListener('click', () => {
+      formular.elements.umfang.value = link.dataset.anliegen;
+      anliegenAnwenden();
+    });
+  });
 
   function fehlerZeigen(feld, text) {
     const traeger = feld.closest('.eingabe');
@@ -242,6 +278,8 @@ const rechner = (function () {
     fehlerZeigen(feld, ergebnis === true ? '' : ergebnis);
     return ergebnis === true;
   }
+
+  anliegenAnwenden();
 
   Object.keys(regeln).forEach(name => {
     const feld = formular.elements[name];
@@ -319,7 +357,7 @@ const rechner = (function () {
       email:     d.email,
       telefon:   d.telefon || '',
       ort:       d.ort,
-      einheiten: Number(d.einheiten),
+      einheiten: d.einheiten ? Number(d.einheiten) : null,
       baujahr:   d.baujahr ? Number(d.baujahr) : null,
       umfang:    d.umfang || '',
       nachricht: d.nachricht || '',
@@ -380,15 +418,16 @@ const rechner = (function () {
 
   /* Weg 2: vorbereitete E-Mail, wenn keine Verwaltung eingerichtet ist */
   function absendenPerMailprogramm(d, stillschweigend = false) {
-    const betreff = `Anfrage WEG-Verwaltung — ${d.ort}, ${d.einheiten} Einheiten`;
+    const betreff = `Anfrage ${d.umfang || 'Knopf Immobilien'} — ${d.ort}` +
+      (d.einheiten ? `, ${d.einheiten} Einheiten` : '');
     const rumpf = [
       `Name:       ${d.name}`,
       `E-Mail:     ${d.email}`,
       `Telefon:    ${d.telefon || '—'}`,
       `Ort:        ${d.ort}`,
-      `Einheiten:  ${d.einheiten}`,
+      `Einheiten:  ${d.einheiten || '—'}`,
       `Baujahr:    ${d.baujahr || '—'}`,
-      `Umfang:     ${d.umfang}`,
+      `Anliegen:   ${d.umfang}`,
       '',
       'Nachricht:',
       d.nachricht || '—',
