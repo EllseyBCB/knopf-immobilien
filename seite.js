@@ -7,24 +7,35 @@
 /* ──────────────────────────────────────────────
    HIER ÄNDERN — Preise und Empfängeradresse
    ──────────────────────────────────────────────
-   Die Preisregel ist am 24.08.2026 von Jim Knopf freigegeben.
+   Die Preisregel ist am 24.08.2026 von Jim Knopf freigegeben,
+   Mindestsatz für kleine Anlagen, Anzeige als Spanne und fester
+   Grundsatz ohne Baujahr am 25.10.2026.
    Alle Beträge netto, pro Einheit und Monat. Wer sie ändert,
    ändert damit auch das, was der Rechner auf der Startseite
    ausweist — vorher mit Jim abstimmen.                           */
 
 const PREISE = {
-  // Kleinste Anlage: drei Einheiten. Dort gelten diese beiden Eckwerte,
-  // je Einheit und Monat, netto.
-  aeltesteAnlage:  51.00,   // Baujahr 1970 oder älter -> teuerster Satz
-  neubau:          31.00,   // Baujahr im laufenden Jahr -> günstigster Satz
+  // Grundsatz je Einheit und Monat, netto, bezogen auf drei Einheiten.
+  // Das Baujahr fließt seit 25.10.2026 nicht mehr in den Rechner ein,
+  // sondern erst ins schriftliche Angebot (Feld im Kontaktformular).
+  grundsatz:       41.00,
 
-  aeltestesBaujahr: 1970,   // alles Ältere wird wie 1970 gerechnet
   mindestEinheiten:    3,   // darunter nimmt Knopf Immobilien keine Anlage an
   hoechstEinheiten:  120,   // Ende des Reglers
 
   // Mengeneffekt: Bei der größten Anlage sinkt der Satz auf diesen Anteil
   // des Dreier-Satzes. Dazwischen läuft es weich, nicht in Stufen.
   anteilBeiHoechstzahl: 0.58,
+
+  // Kleine Anlagen: Bei 3 bis 4 Einheiten mindestens dieser Satz je Einheit.
+  // Von 5 bis 10 Einheiten gleitet der Satz zurück auf die Kurve oben,
+  // ab 10 Einheiten gilt allein die Kurve.
+  mindestSatzKlein: 50.00,
+  kleinBis:            4,
+  uebergangBis:       10,
+
+  // Angezeigt wird eine Spanne: vom Richtwert bis zu diesem Aufschlag darüber.
+  spanneNachOben:   0.15,
 
   // Zusatzleistungen, getrennt ausgewiesen. Sie verändern den Grundsatz oben
   // nicht, damit die Spanne von 31 bis 51 Euro belastbar bleibt.
@@ -87,29 +98,13 @@ const ruhig = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const rechner = (function () {
   const schieberEinheiten = document.getElementById('einheiten');
-  const schieberBaujahr = document.getElementById('baujahr');
-  if (!schieberEinheiten || !schieberBaujahr) return null;
+  if (!schieberEinheiten) return null;
 
   const anzeigeEinheiten = document.getElementById('einheiten-wert');
-  const anzeigeBaujahr = document.getElementById('baujahr-wert');
   const ausgabeProEinheit = document.getElementById('preis-einheit');
   const ausgabeZusatz = document.getElementById('preis-zusatz');
   const zeileZusatz = document.getElementById('zusatz-zeile');
   const ausgabeGesamt = document.getElementById('preis-gesamt');
-
-  // Neubau ist immer das laufende Jahr — der Regler wandert also mit.
-  const heuteJahr = new Date().getFullYear();
-  schieberBaujahr.max = String(heuteJahr);
-  if (Number(schieberBaujahr.value) > heuteJahr) schieberBaujahr.value = String(heuteJahr);
-
-  /* Grundsatz allein aus dem Baujahr, bezogen auf drei Einheiten.
-     1970 -> 51 Euro, laufendes Jahr -> 31 Euro, dazwischen gleichmäßig. */
-  function satzNachBaujahr(jahr) {
-    const spanne = heuteJahr - PREISE.aeltestesBaujahr;
-    const alter = Math.min(Math.max(jahr, PREISE.aeltestesBaujahr), heuteJahr);
-    const anteil = spanne <= 0 ? 0 : (alter - PREISE.aeltestesBaujahr) / spanne;
-    return PREISE.aeltesteAnlage - anteil * (PREISE.aeltesteAnlage - PREISE.neubau);
-  }
 
   /* Mengeneffekt: 1,0 bei drei Einheiten, weich fallend bis zum Anteil
      bei der Höchstzahl. Logarithmisch, weil der Aufwand je Einheit
@@ -125,15 +120,28 @@ const rechner = (function () {
   function lesen() {
     return {
       anzahl: Math.max(Number(schieberEinheiten.value), PREISE.mindestEinheiten),
-      baujahr: Number(schieberBaujahr.value),
       umfang: document.querySelector('input[name="umfang"]:checked').value,
       zusatz: [...document.querySelectorAll('input[name="zusatz"]:checked')].map(e => e.value)
     };
   }
 
+  /* Mindestsatz für kleine Anlagen: bis „kleinBis" Einheiten voll,
+     danach bis „uebergangBis" in einer Kurve auslaufend. Quadratisch statt
+     geradlinig, damit der Gesamtpreis mit jeder Einheit steigt und eine
+     größere Anlage nie insgesamt billiger wird als eine kleinere. */
+  function mitMindestsatz(satz, anzahl) {
+    const rest = (PREISE.uebergangBis - anzahl) / (PREISE.uebergangBis - PREISE.kleinBis);
+    const gewicht = anzahl <= PREISE.kleinBis ? 1
+      : anzahl >= PREISE.uebergangBis ? 0
+      : rest * rest;
+    const ziel = Math.max(satz, PREISE.mindestSatzKlein);
+    return satz + gewicht * (ziel - satz);
+  }
+
   function rechnen() {
     const e = lesen();
-    const grund = satzNachBaujahr(e.baujahr) * mengenfaktor(e.anzahl);
+    const grund = mitMindestsatz(
+      PREISE.grundsatz * mengenfaktor(e.anzahl), e.anzahl);
 
     let zusatz = 0;
     if (e.umfang === 'weg_sev') zusatz += PREISE.sondereigentum;
@@ -152,11 +160,13 @@ const rechner = (function () {
     const e = rechnen();
 
     anzeigeEinheiten.textContent = e.anzahl;
-    anzeigeBaujahr.textContent = e.baujahr <= PREISE.aeltestesBaujahr
-      ? PREISE.aeltestesBaujahr + ' oder älter'
-      : (e.baujahr >= heuteJahr ? e.baujahr + ' (Neubau)' : e.baujahr);
 
-    ausgabeProEinheit.textContent = euroGenau.format(e.grund);
+    // Spanne statt Festpreis: Richtwert bis Richtwert + Aufschlag
+    const zahl = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 });
+    const spanne = (von, bis) => `${zahl.format(von)} – ${zahl.format(bis)} €`;
+    const grundVon = Math.round(e.grund);
+    const grundBis = Math.round(e.grund * (1 + PREISE.spanneNachOben));
+    ausgabeProEinheit.textContent = spanne(grundVon, grundBis);
 
     if (e.zusatz > 0) {
       zeileZusatz.hidden = false;
@@ -165,10 +175,12 @@ const rechner = (function () {
       zeileZusatz.hidden = true;
     }
 
-    ausgabeGesamt.textContent = euro.format(e.gesamt);
+    const aufZehn = x => Math.round(x / 10) * 10;
+    ausgabeGesamt.textContent = spanne(
+      aufZehn((e.grund + e.zusatz) * e.anzahl),
+      aufZehn((e.grund * (1 + PREISE.spanneNachOben) + e.zusatz) * e.anzahl));
 
     schieberEinheiten.style.setProperty('--fuellstand', fuellstand(schieberEinheiten));
-    schieberBaujahr.style.setProperty('--fuellstand', fuellstand(schieberBaujahr));
   }
 
   document.querySelectorAll('#rechner input').forEach(feld => {
@@ -190,7 +202,6 @@ const rechner = (function () {
   knopf.addEventListener('click', () => {
     const e = rechner.rechnen();
     formular.elements.einheiten.value = e.anzahl;
-    if (formular.elements.baujahr) formular.elements.baujahr.value = e.baujahr;
     formular.elements.umfang.value =
       e.umfang === 'weg_sev' ? 'WEG plus Sondereigentum' : 'Nur WEG-Verwaltung';
     formular.elements.umfang.dispatchEvent(new Event('change'));
